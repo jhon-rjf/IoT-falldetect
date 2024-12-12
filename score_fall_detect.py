@@ -188,10 +188,10 @@ def app_callback(pad, info, user_data):
                         y_max = int(bbox.ymax() * height)
                         
                         # Always display person detection and score
-                        cv2.putText(frame, f"Person: {confidence*100:.1f}%",
+                        cv2.putText(frame, f"Person: {confidence*100:.1f}% Fall Score: {user_data.fall_score:.1f}",
                                   (x_min, y_min - 45),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)
-                        cv2.putText(frame, f"Person: {confidence*100:.1f}%",
+                        cv2.putText(frame, f"Person: {confidence*100:.1f}% Fall Score: {user_data.fall_score:.1f}",
                                   (x_min, y_min - 45),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                         
