@@ -1,12 +1,12 @@
 import gi
 gi.require_version('Gst', '1.0')
-import curses
 from gi.repository import Gst, GLib
 import os
 import numpy as np
 import cv2
 import hailo
 import time
+import curses
 from collections import deque, defaultdict
 from hailo_rpi_common import (
     get_caps_from_pad,
@@ -51,6 +51,15 @@ class CustomCallbackClass(app_callback_class):
     def cleanup(self):
         """Clean up curses"""
         curses.endwin()
+
+    def print_fps(self):
+        # Override to prevent FPS output
+        pass
+        
+    def increment(self):
+        # Override to call parent's increment but skip FPS output
+        super().increment()
+        self.update_display()  # Update our display after increment
         
     def reset_state(self):
         """Reset all states when restarting video"""
