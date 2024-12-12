@@ -5,7 +5,6 @@ import os
 import numpy as np
 import cv2
 import hailo
-import argparse
 from hailo_rpi_common import (
     get_caps_from_pad,
     get_numpy_from_buffer,
@@ -49,16 +48,13 @@ def app_callback(pad, info, user_data):
     return Gst.PadProbeReturn.OK
 
 if __name__ == "__main__":
-    # Get the default parser and add our custom arguments
+    # Get the default parser
     parser = get_default_parser()
-    parser.add_argument("--input", default="picam", help="Input source (picam for Raspberry Pi Camera)")
     args = parser.parse_args()
 
-    # Set video source based on input argument
+    # Modify input source for PiCamera if needed
     if args.input == "picam":
         args.input_source = "libcamera-src ! video/x-raw,width=640,height=480,framerate=30/1 ! videoconvert"
-    else:
-        args.input_source = f"{args.input}"
 
     # Create an instance of the user app callback class
     user_data = app_callback_class()
