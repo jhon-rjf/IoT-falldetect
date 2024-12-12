@@ -20,6 +20,7 @@ class CustomCallbackClass(app_callback_class):
         super().__init__()
         self.last_video_end_time = 0
         self.video_restart_delay = 5
+        self.first_run = True
         
         # Initialize state variables first
         self.use_frame = True
@@ -60,6 +61,7 @@ class CustomCallbackClass(app_callback_class):
         self.detection_status = "MONITORING"
         self.fall_score = 0
         self.fall_frame = None
+        self.frame_count = 0
         self.update_display("[System] Resetting all detection states...")
         
     def update_display(self, message=None):
@@ -68,10 +70,10 @@ class CustomCallbackClass(app_callback_class):
         
         # Draw border
         self.screen.addstr(0, 0, "+" + "-" * 58 + "+")
-        for i in range(1, 11):
+        for i in range(1, 12):
             self.screen.addstr(i, 0, "|")
             self.screen.addstr(i, 59, "|")
-        self.screen.addstr(11, 0, "+" + "-" * 58 + "+")
+        self.screen.addstr(12, 0, "+" + "-" * 58 + "+")
         
         # Title
         self.screen.addstr(1, 25, "Fall Detection System")
@@ -82,8 +84,6 @@ class CustomCallbackClass(app_callback_class):
         # Different colors for different states
         if self.fall_detection_active:
             self.screen.addstr(4, 2, "[ FALL DETECTED ]", curses.color_pair(1) | curses.A_BOLD)
-            if self.fall_frame:
-                self.screen.addstr(4, 30, f"at frame {self.fall_frame}", curses.color_pair(1) | curses.A_BOLD)
         elif self.fall_score > 50:
             self.screen.addstr(4, 2, "[ WARNING ]", curses.color_pair(2) | curses.A_BOLD)
         else:
@@ -96,6 +96,10 @@ class CustomCallbackClass(app_callback_class):
         # Latest message
         if message:
             self.screen.addstr(9, 2, f"Last Event: {message}")
+        
+        # Current detected frame for fall
+        if self.fall_frame:
+            self.screen.addstr(10, 2, f"Current Detect Frame: {self.fall_frame}")
         
         self.screen.refresh()
         
@@ -150,7 +154,6 @@ class CustomCallbackClass(app_callback_class):
             was_active = self.fall_detection_active
             self.fall_detection_active = sum(self.fall_history) >= 2
             
-            # Record frame number when fall is first detected
             if self.fall_detection_active and not was_active:
                 self.fall_frame = self.frame_count
             
@@ -180,9 +183,13 @@ def app_callback(pad, info, user_data):
     user_data.increment()
     format, width, height = get_caps_from_pad(pad)
 
+    # Check if this is first frame of video
     if user_data.frame_count == 1:
-        user_data.update_display("Waiting 5 seconds before starting next video...")
-        time.sleep(5)
+        if user_data.first_run:
+            user_data.first_run = False
+        else:
+            user_data.update_display("Waiting 5 seconds before starting next video...")
+            time.sleep(5)
         user_data.reset_state()
 
     frame = None
