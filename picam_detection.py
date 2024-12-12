@@ -14,57 +14,62 @@ from picamera2 import Picamera2
 
 class PiCameraDetection:
     def __init__(self, width=640, height=360):
+        # Initialize GStreamer
+        Gst.init(None)
+        
         self.width = width
         self.height = height
         
         # Initialize PiCamera2
         self.picam = Picamera2()
         self.picam.configure(self.picam.create_video_configuration(
-            main={"size": (self.width, self.height), "format": "RGB888"},
-            controls={"FrameDurationLimits": (33333, 33333)}  # 30fps
+            main={"size": (self.width, self.height), "format": "RGB888"}
         ))
         
-        # Create custom GStreamer pipeline
+        # Create simplified GStreamer pipeline
         pipeline_str = (
             f"appsrc name=source ! "
-            f"video/x-raw,format=RGB,width={self.width},height={self.height},framerate=30/1 ! "
-            f"videoconvert ! "
-            f"video/x-raw,format=RGB ! "
-            f"tee name=t ! "
-            f"queue ! "
             f"videoconvert ! "
             f"hailo_net config-path=/usr/local/hailo/detection.hef ! "
-            f"queue ! "
-            f"fakesink name=hailo_sink t. ! "
-            f"queue ! "
-            f"videoconvert ! "
-            f"autovideosink"
+            f"fakesink name=hailo_sink sync=false"
         )
         
         self.pipeline = Gst.parse_launch(pipeline_str)
         self.appsrc = self.pipeline.get_by_name('source')
         
-        # Setup appsrc
-        self.appsrc.set_property('format', Gst.Format.TIME)
-        self.appsrc.set_property('block', True)
+        # Setup appsrc caps
+        caps = Gst.Caps.from_string(
+            f'video/x-raw,format=RGB,width={self.width},height={self.height},framerate=30/1'
+        )
+        self.appsrc.set_caps(caps)
         
     def frame_callback(self):
         while True:
-            # Capture frame from PiCamera2
-            frame = self.picam.capture_array()
-            
-            # Convert frame to GStreamer buffer
-            buffer = Gst.Buffer.new_wrapped(frame.tobytes())
-            
-            # Push buffer to pipeline
-            self.appsrc.emit('push-buffer', buffer)
-            
+            try:
+                # Capture frame from PiCamera2
+                frame = self.picam.capture_array()
+                
+                # Create GStreamer buffer
+                buffer = Gst.Buffer.new_wrapped(frame.tobytes())
+                
+                # Push buffer to pipeline
+                ret = self.appsrc.emit('push-buffer', buffer)
+                if ret != Gst.FlowReturn.OK:
+                    print(f"Error pushing buffer: {ret}")
+                    
+            except Exception as e:
+                print(f"Error in frame callback: {e}")
+                break
+                
     def run(self):
         # Start PiCamera2
         self.picam.start()
         
-        # Start GStreamer pipeline
-        self.pipeline.set_state(Gst.State.PLAYING)
+        # Set pipeline state to playing
+        ret = self.pipeline.set_state(Gst.State.PLAYING)
+        if ret == Gst.StateChangeReturn.FAILURE:
+            print("Failed to set pipeline to PLAYING")
+            return
         
         try:
             # Create user callback instance
@@ -72,7 +77,8 @@ class PiCameraDetection:
             
             # Add probe to get detections
             hailo_sink = self.pipeline.get_by_name('hailo_sink')
-            hailo_sink.get_static_pad('sink').add_probe(
+            pad = hailo_sink.get_static_pad('sink')
+            pad.add_probe(
                 Gst.PadProbeType.BUFFER,
                 app_callback,
                 user_data
@@ -89,7 +95,9 @@ class PiCameraDetection:
             loop.run()
             
         except KeyboardInterrupt:
-            pass
+            print("\nStopping...")
+        except Exception as e:
+            print(f"Error: {e}")
         finally:
             self.cleanup()
             
@@ -98,9 +106,5 @@ class PiCameraDetection:
         self.picam.stop()
 
 if __name__ == "__main__":
-    # Initialize GStreamer
-    Gst.init(None)
-    
-    # Create and run detection pipeline
     detection = PiCameraDetection()
     detection.run()
