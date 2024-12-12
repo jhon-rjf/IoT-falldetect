@@ -64,7 +64,8 @@ class CustomCallbackClass(app_callback_class):
                 ratio = self.current_height_ratio * 0.7 + ratio * 0.3
                 
             return ratio
-        except Exception:
+        except Exception as e:
+            print(f"Height ratio calculation error: {e}")
             return self.current_height_ratio
 
     def _calculate_body_angle(self, points, bbox, width, height):
@@ -92,7 +93,8 @@ class CustomCallbackClass(app_callback_class):
                 angle = self.current_body_angle * 0.7 + angle * 0.3
             
             return angle
-        except Exception:
+        except Exception as e:
+            print(f"Body angle calculation error: {e}")
             return self.current_body_angle
 
     def _get_track_id(self, bbox, width, height):
@@ -135,6 +137,10 @@ class CustomCallbackClass(app_callback_class):
         track_scores.append(current_score)
         self.fall_score = sum(track_scores) / len(track_scores) if track_scores else current_score
         
+        # Print debug information
+        print(f"Current fall score: {self.fall_score:.1f}")
+        print(f"Height ratio: {self.current_height_ratio:.2f}, Body angle: {self.current_body_angle:.1f}")
+        
         # Check for fall condition
         is_fall = (self.current_height_ratio < self.height_ratio_threshold or 
                   self.current_body_angle > self.angle_threshold)
@@ -145,7 +151,7 @@ class CustomCallbackClass(app_callback_class):
         # Update status based on current score
         if self.fall_detection_active:
             self.detection_status = "FALL DETECTED"
-        elif self.fall_score > 50:
+        elif self.fall_score > 20:
             self.detection_status = "WARNING"
         else:
             self.detection_status = "MONITORING"
@@ -187,28 +193,34 @@ def app_callback(pad, info, user_data):
                         x_max = int(bbox.xmax() * width)
                         y_max = int(bbox.ymax() * height)
                         
-                        # Always display person detection and score
-                        cv2.putText(frame, f"Person: {confidence*100:.1f}% Fall Score: {user_data.fall_score:.1f}",
-                                  (x_min, y_min - 45),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)
-                        cv2.putText(frame, f"Person: {confidence*100:.1f}% Fall Score: {user_data.fall_score:.1f}",
-                                  (x_min, y_min - 45),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                        # Print debug information before drawing
+                        print(f"Drawing fall score: {user_data.fall_score:.1f}")
                         
-                        # Always display fall detection score
-                        cv2.putText(frame, f"Fall Score: {user_data.fall_score:.1f}",
-                                  (x_min, y_min - 25),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)
-                        cv2.putText(frame, f"Fall Score: {user_data.fall_score:.1f}",
-                                  (x_min, y_min - 25),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                        # Draw person detection and fall score with increased visibility
+                        text = f"Person1: {confidence*100:.1f}% Fall Score: {user_data.fall_score:.1f}"
+                        
+                        # Draw black outline for better visibility
+                        cv2.putText(frame, text,
+                                  (x_min, y_min - 45),
+                                  cv2.FONT_HERSHEY_SIMPLEX, 
+                                  1.0,           # Increased font size
+                                  (0, 0, 0),     # Black outline
+                                  4)             # Thicker outline
+                                  
+                        # Draw main text in a bright color
+                        cv2.putText(frame, text,
+                                  (x_min, y_min - 45),
+                                  cv2.FONT_HERSHEY_SIMPLEX, 
+                                  1.0,           # Increased font size
+                                  (0, 255, 255), # Yellow color for visibility
+                                  2)             # Normal thickness for inner text
                         
                         # Display status message
                         cv2.putText(frame, user_data.detection_status,
-                                  (x_min, y_min - 5),
+                                  (x_min, y_min - 20),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)
                         cv2.putText(frame, user_data.detection_status,
-                                  (x_min, y_min - 5),
+                                  (x_min, y_min - 20),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                         
                         # Draw bounding box with color based on status
