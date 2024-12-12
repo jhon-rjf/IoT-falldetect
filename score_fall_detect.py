@@ -42,7 +42,6 @@ class CustomCallbackClass(app_callback_class):
             left_ankle = points[15]
             right_ankle = points[16]
             
-            # Convert normalized coordinates to actual coordinates
             head_x = int((head.x() * bbox.width() + bbox.xmin()) * width)
             head_y = int((head.y() * bbox.height() + bbox.ymin()) * height)
             left_ankle_x = int((left_ankle.x() * bbox.width() + bbox.xmin()) * width)
@@ -50,11 +49,9 @@ class CustomCallbackClass(app_callback_class):
             right_ankle_x = int((right_ankle.x() * bbox.width() + bbox.xmin()) * width)
             right_ankle_y = int((right_ankle.y() * bbox.height() + bbox.ymin()) * height)
             
-            # Calculate midpoint of ankles
             ankle_mid_x = (left_ankle_x + right_ankle_x) / 2
             ankle_mid_y = (left_ankle_y + right_ankle_y) / 2
             
-            # Calculate distances
             vertical_dist = abs(head_y - ankle_mid_y)
             horizontal_dist = abs(head_x - ankle_mid_x)
             
@@ -63,7 +60,6 @@ class CustomCallbackClass(app_callback_class):
                 
             ratio = vertical_dist / horizontal_dist
             
-            # Smooth sudden changes
             if abs(ratio - self.current_height_ratio) > 2:
                 ratio = self.current_height_ratio * 0.7 + ratio * 0.3
                 
@@ -78,7 +74,6 @@ class CustomCallbackClass(app_callback_class):
             left_hip = points[11]
             right_hip = points[12]
             
-            # Convert normalized coordinates to actual coordinates
             neck_x = int((neck.x() * bbox.width() + bbox.xmin()) * width)
             neck_y = int((neck.y() * bbox.height() + bbox.ymin()) * height)
             left_hip_x = int((left_hip.x() * bbox.width() + bbox.xmin()) * width)
@@ -86,16 +81,13 @@ class CustomCallbackClass(app_callback_class):
             right_hip_x = int((right_hip.x() * bbox.width() + bbox.xmin()) * width)
             right_hip_y = int((right_hip.y() * bbox.height() + bbox.ymin()) * height)
             
-            # Calculate hip midpoint
             hip_mid_x = (left_hip_x + right_hip_x) / 2
             hip_mid_y = (left_hip_y + right_hip_y) / 2
             
-            # Calculate angle
             dx = hip_mid_x - neck_x
             dy = hip_mid_y - neck_y
             angle = abs(np.degrees(np.arctan2(dx, dy)))
             
-            # Smooth sudden changes
             if abs(angle - self.current_body_angle) > 30:
                 angle = self.current_body_angle * 0.7 + angle * 0.3
             
@@ -112,7 +104,6 @@ class CustomCallbackClass(app_callback_class):
         min_dist = float('inf')
         best_track_id = None
         
-        # Find closest existing track
         for track_id, track_info in self.tracks.items():
             if track_info['positions']:
                 last_pos = np.array(track_info['positions'][-1])
@@ -121,7 +112,6 @@ class CustomCallbackClass(app_callback_class):
                     min_dist = dist
                     best_track_id = track_id
         
-        # Create new track if none found
         if best_track_id is None:
             best_track_id = self.next_track_id
             self.next_track_id += 1
@@ -130,29 +120,29 @@ class CustomCallbackClass(app_callback_class):
         return best_track_id
 
     def detect_fall(self, points, bbox, width, height, track_id):
-        """Detect falls and calculate detection score"""
-        # Update current measurements
+        """Detect falls and update detection score immediately"""
+        # Calculate current measurements
         self.current_height_ratio = self._calculate_height_ratio(points, bbox, width, height)
         self.current_body_angle = self._calculate_body_angle(points, bbox, width, height)
         
-        # Calculate fall detection score components
+        # Calculate score components
         height_score = max(0, min(100, (1 - self.current_height_ratio) * 100))
         angle_score = max(0, min(100, (self.current_body_angle / 90) * 100))
         current_score = max(height_score, angle_score)
         
-        # Update tracking scores
+        # Update tracking scores immediately
         track_scores = self.tracks[track_id]['fall_scores']
         track_scores.append(current_score)
-        self.fall_score = sum(track_scores) / len(track_scores) if track_scores else 0
+        self.fall_score = sum(track_scores) / len(track_scores) if track_scores else current_score
         
-        # Determine fall status
+        # Check for fall condition
         is_fall = (self.current_height_ratio < self.height_ratio_threshold or 
                   self.current_body_angle > self.angle_threshold)
         
         self.fall_history.append(is_fall)
         self.fall_detection_active = sum(self.fall_history) >= 3
         
-        # Update detection status
+        # Update status based on current score
         if self.fall_detection_active:
             self.detection_status = "FALL DETECTED"
         elif self.fall_score > 50:
@@ -160,7 +150,7 @@ class CustomCallbackClass(app_callback_class):
         else:
             self.detection_status = "MONITORING"
         
-        return self.fall_detection_active
+        return is_fall
 
 def app_callback(pad, info, user_data):
     buffer = info.get_buffer()
@@ -197,42 +187,48 @@ def app_callback(pad, info, user_data):
                         x_max = int(bbox.xmax() * width)
                         y_max = int(bbox.ymax() * height)
                         
-                        # Display person detection confidence
-                        conf_text = f"Person: {confidence*100:.1f}%"
-                        cv2.putText(frame, conf_text,
+                        # Always display person detection and score
+                        cv2.putText(frame, f"Person: {confidence*100:.1f}%",
                                   (x_min, y_min - 45),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)
-                        cv2.putText(frame, conf_text,
+                        cv2.putText(frame, f"Person: {confidence*100:.1f}%",
                                   (x_min, y_min - 45),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                         
-                        # Display fall detection score
-                        score_text = f"Fall Score: {user_data.fall_score:.1f}"
-                        cv2.putText(frame, score_text,
+                        # Always display fall detection score
+                        cv2.putText(frame, f"Fall Score: {user_data.fall_score:.1f}",
                                   (x_min, y_min - 25),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)
-                        cv2.putText(frame, score_text,
+                        cv2.putText(frame, f"Fall Score: {user_data.fall_score:.1f}",
                                   (x_min, y_min - 25),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                         
-                        # Display status and warning if needed
-                        if is_falling:
-                            cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), 
-                                        (0, 165, 255), 2)
-                            cv2.putText(frame, "FALL DETECTED", 
-                                      (x_min, y_min - 5),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
+                        # Display status message
+                        cv2.putText(frame, user_data.detection_status,
+                                  (x_min, y_min - 5),
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)
+                        cv2.putText(frame, user_data.detection_status,
+                                  (x_min, y_min - 5),
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                        
+                        # Draw bounding box with color based on status
+                        if user_data.fall_detection_active:
+                            box_color = (0, 165, 255)  # Orange for fall detected
                         elif user_data.fall_score > 50:
-                            cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), 
-                                        (0, 255, 255), 2)
+                            box_color = (0, 255, 255)  # Yellow for warning
+                        else:
+                            box_color = (0, 255, 0)    # Green for normal
+                            
+                        cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), 
+                                    box_color, 2)
                 
                 # Draw keypoints
                 if user_data.use_frame:
                     for point in points:
                         x = int((point.x() * bbox.width() + bbox.xmin()) * width)
                         y = int((point.y() * bbox.height() + bbox.ymin()) * height)
-                        cv2.circle(frame, (x, y), 4, (0, 0, 0), -1)
-                        cv2.circle(frame, (x, y), 3, (0, 255, 0), -1)
+                        cv2.circle(frame, (x, y), 4, (0, 0, 0), -1)  # Black outline
+                        cv2.circle(frame, (x, y), 3, (0, 255, 0), -1)  # Green center
 
     if user_data.use_frame:
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
