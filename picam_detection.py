@@ -26,29 +26,24 @@ class PiCameraDetection:
             main={"size": (self.width, self.height), "format": "RGB888"}
         ))
         
-        # Create pipeline with post-processing elements
+        # Create basic pipeline
         pipeline_str = (
             f"appsrc name=source ! "
             f"videoconvert ! "
             f"video/x-raw,format=RGB ! "
-            f"tee name=t ! "
-            f"queue ! "
-            f"hailonet config-path=/usr/local/hailo/detection.hef ! "
-            f"queue ! "
-            f"hailofilter function-name=filter_by_score min-score=0.4 ! "
-            f"queue ! "
-            f"hailotracker name=hailo_tracker tracking-type=bytetrack iou-threshold=0.5 ! "
-            f"queue ! "
-            f"hailooverlay ! "
-            f"queue ! "
+            f"hailonet ! "  # Basic hailonet without properties
             f"videoconvert ! "
-            f"autovideosink "
-            f"t. ! "
-            f"queue ! "
-            f"fakesink name=hailo_sink"
+            f"autovideosink"
         )
         
-        self.pipeline = Gst.parse_launch(pipeline_str)
+        # Create pipeline
+        try:
+            self.pipeline = Gst.parse_launch(pipeline_str)
+        except GLib.Error as e:
+            print(f"Error creating pipeline: {e}")
+            raise
+            
+        # Get pipeline elements
         self.appsrc = self.pipeline.get_by_name('source')
         
         # Setup appsrc caps
@@ -82,31 +77,22 @@ class PiCameraDetection:
     def run(self):
         # Start PiCamera2
         self.picam.start()
+        print("PiCamera2 started")
         
         # Set pipeline state to playing
         ret = self.pipeline.set_state(Gst.State.PLAYING)
         if ret == Gst.StateChangeReturn.FAILURE:
             print("Failed to set pipeline to PLAYING")
             return
+        print("Pipeline is PLAYING")
         
         try:
-            # Create user callback instance
-            user_data = user_app_callback_class()
-            
-            # Add probe to get detections
-            hailo_sink = self.pipeline.get_by_name('hailo_sink')
-            pad = hailo_sink.get_static_pad('sink')
-            pad.add_probe(
-                Gst.PadProbeType.BUFFER,
-                app_callback,
-                user_data
-            )
-            
             # Start frame capture thread
             import threading
             capture_thread = threading.Thread(target=self.frame_callback)
             capture_thread.daemon = True
             capture_thread.start()
+            print("Frame capture thread started")
             
             # Run main loop
             loop = GLib.MainLoop()
@@ -122,7 +108,11 @@ class PiCameraDetection:
     def cleanup(self):
         self.pipeline.set_state(Gst.State.NULL)
         self.picam.stop()
+        print("Cleanup completed")
 
 if __name__ == "__main__":
-    detection = PiCameraDetection()
-    detection.run()
+    try:
+        detection = PiCameraDetection()
+        detection.run()
+    except Exception as e:
+        print(f"Fatal error: {e}")
