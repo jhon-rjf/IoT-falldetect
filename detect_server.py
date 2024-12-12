@@ -27,6 +27,8 @@ from gui_app import create_gui
 from fall_report_client import FallReportClient
 from arduino_communication import ArduinoCommunication
 from config import Config
+from threading import Thread
+import socket
 
 class ReportThread(Thread):
     def __init__(self, report_client, arduino_comm, gui_queue):
@@ -37,21 +39,24 @@ class ReportThread(Thread):
         self.daemon = True
 
     def run(self):
+        print("[DEBUG] Report thread starting")
         try:
-            print("[DEBUG] Starting fall report process in thread")
+            print("[DEBUG] Sending fall report")
             report_result = self.report_client.send_fall_report()
-            print(f"[DEBUG] Report result: {report_result}")
+            print(f"[DEBUG] Report sent, result: {report_result}")
             
             if report_result and report_result.get('password'):
                 print("[DEBUG] Sending password to Arduino")
                 self.arduino_comm.send_password(report_result['password'])
-                print("[DEBUG] Password sent to Arduino")
+                print("[DEBUG] Arduino communication complete")
                 self.gui_queue.put(('log', "Report sent and password transferred to Arduino"))
             else:
                 print("[DEBUG] Report failed or no password received")
         except Exception as e:
-            print(f"[DEBUG] Error in fall reporting thread: {str(e)}")
+            print(f"[DEBUG] Error in report thread: {str(e)}")
             self.gui_queue.put(('log', f"Error in fall reporting: {str(e)}"))
+        finally:
+            print("[DEBUG] Report thread finished")
             
 class GUIThread(Thread):
     def __init__(self, gui_queue):
@@ -113,6 +118,8 @@ class PTZConnectionThread(Thread):
 
 class CustomCallbackClass(app_callback_class):
     def __init__(self, gui_queue):
+        
+        
         super().__init__()
         self.use_frame = True
         self.confidence_threshold = 0.4
@@ -121,12 +128,13 @@ class CustomCallbackClass(app_callback_class):
         self.report_client = FallReportClient()
         self.arduino_comm = ArduinoCommunication()
 
-        self.led_controller = LEDController("192.168.0.4")
+        self.led_controller = LEDController("192.168.0.7")
         self.send_gui_update('led_status', ("Connected", "Initialized"))
 
         self.ptz_tracker = PTZTracker()
         self.ptz_connection = PTZConnectionThread(self.ptz_tracker, self.gui_queue)
         self.ptz_connection.start()
+       
 
         self.tracks = defaultdict(lambda: {
             'positions': deque(maxlen=30),
@@ -312,49 +320,55 @@ class CustomCallbackClass(app_callback_class):
             return False
 
 def app_callback(pad, info, user_data):
+    print("[DEBUG] Starting frame processing")
     buffer = info.get_buffer()
     if buffer is None:
         return Gst.PadProbeReturn.OK
 
-    format, width, height = get_caps_from_pad(pad)
-    frame = get_numpy_from_buffer(buffer, format, width, height)
+    try:
+        format, width, height = get_caps_from_pad(pad)
+        frame = get_numpy_from_buffer(buffer, format, width, height)
 
-    if frame is not None:
-        # fall_status는 낙상 확인 여부, is_verifying는 검증 중 상태
-        fall_status = user_data.confirmed_fall
-        is_verifying = user_data.fall_detection_timestamp is not None
-        user_data.video_recorder.process_frame(frame, fall_status, is_verifying)
+        if frame is not None:
+            fall_status = user_data.confirmed_fall
+            is_verifying = user_data.fall_detection_timestamp is not None
+            print(f"[DEBUG] Processing frame - fall_status: {fall_status}, is_verifying: {is_verifying}")
+            user_data.video_recorder.process_frame(frame, fall_status, is_verifying)
 
-    user_data.increment()
+        user_data.increment()
+        
+        roi = hailo.get_roi_from_buffer(buffer)
+        detections = roi.get_objects_typed(hailo.HAILO_DETECTION)
 
-    roi = hailo.get_roi_from_buffer(buffer)
-    detections = roi.get_objects_typed(hailo.HAILO_DETECTION)
+        person_detections = []
+        for detection in detections:
+            if detection.get_label() == "person" and detection.get_confidence() > user_data.confidence_threshold:
+                bbox = detection.get_bbox()
+                bbox_size = bbox.width() * bbox.height()
+                person_detections.append((detection, bbox_size))
 
-    person_detections = []
-    for detection in detections:
-        if detection.get_label() == "person" and detection.get_confidence() > user_data.confidence_threshold:
-            bbox = detection.get_bbox()
-            bbox_size = bbox.width() * bbox.height()
-            person_detections.append((detection, bbox_size))
+        if person_detections:
+            largest_detection, _ = max(person_detections, key=lambda x: x[1])
+            bbox = largest_detection.get_bbox()
 
-    if person_detections:
-        largest_detection, _ = max(person_detections, key=lambda x: x[1])
-        bbox = largest_detection.get_bbox()
+            if user_data.ptz_tracker and user_data.ptz_tracker.is_connected:
+                x_movement, y_movement = user_data.ptz_tracker.calculate_movement(bbox, width, height)
+                if x_movement != 0 or y_movement != 0:
+                    user_data.ptz_tracker.send_movement_command(x_movement, y_movement)
 
-        if user_data.ptz_tracker and user_data.ptz_tracker.is_connected:
-            x_movement, y_movement = user_data.ptz_tracker.calculate_movement(bbox, width, height)
-            if x_movement != 0 or y_movement != 0:
-                user_data.ptz_tracker.send_movement_command(x_movement, y_movement)
+            landmarks = largest_detection.get_objects_typed(hailo.HAILO_LANDMARKS)
+            if len(landmarks) != 0:
+                points = landmarks[0].get_points()
+                if len(points) >= 17:
+                    track_id = user_data.get_track_id(bbox, width, height)
+                    user_data.detect_fall(points, bbox, width, height, track_id)
 
-        landmarks = largest_detection.get_objects_typed(hailo.HAILO_LANDMARKS)
-        if len(landmarks) != 0:
-            points = landmarks[0].get_points()
-            if len(points) >= 17:  # 최소 필요한 랜드마크 포인트 수
-                track_id = user_data.get_track_id(bbox, width, height)
-                user_data.detect_fall(points, bbox, width, height, track_id)
+        print("[DEBUG] Frame processed successfully")
+    except Exception as e:
+        print(f"[DEBUG] Error in frame processing: {str(e)}")
 
     return Gst.PadProbeReturn.OK
-
+    
 def main():
     """메인 함수"""
     gui_queue = Queue()
