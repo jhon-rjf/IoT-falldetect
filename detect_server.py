@@ -28,6 +28,31 @@ from fall_report_client import FallReportClient
 from arduino_communication import ArduinoCommunication
 from config import Config
 
+class ReportThread(Thread):
+    def __init__(self, report_client, arduino_comm, gui_queue):
+        super().__init__()
+        self.report_client = report_client
+        self.arduino_comm = arduino_comm
+        self.gui_queue = gui_queue
+        self.daemon = True
+
+    def run(self):
+        try:
+            print("[DEBUG] Starting fall report process in thread")
+            report_result = self.report_client.send_fall_report()
+            print(f"[DEBUG] Report result: {report_result}")
+            
+            if report_result and report_result.get('password'):
+                print("[DEBUG] Sending password to Arduino")
+                self.arduino_comm.send_password(report_result['password'])
+                print("[DEBUG] Password sent to Arduino")
+                self.gui_queue.put(('log', "Report sent and password transferred to Arduino"))
+            else:
+                print("[DEBUG] Report failed or no password received")
+        except Exception as e:
+            print(f"[DEBUG] Error in fall reporting thread: {str(e)}")
+            self.gui_queue.put(('log', f"Error in fall reporting: {str(e)}"))
+            
 class GUIThread(Thread):
     def __init__(self, gui_queue):
         super().__init__()
@@ -253,6 +278,7 @@ class CustomCallbackClass(app_callback_class):
             elif self.fall_detection_timestamp and track_id == self.fall_track_id:
                 elapsed_time = current_time - self.fall_detection_timestamp
                 
+                # detect_fall 메서드 내부의 낙상 확인 부분
                 if elapsed_time >= self.fall_confirmation_time:
                     if not self.confirmed_fall:
                         self.confirmed_fall = True
@@ -262,13 +288,17 @@ class CustomCallbackClass(app_callback_class):
                         self.led_controller.led_on()
                         self.send_gui_update('led_status', ("Connected", "LED ON"))
                         
-                        try:
-                            report_result = self.report_client.send_fall_report()
-                            if report_result and report_result.get('password'):
-                                self.arduino_comm.send_password(report_result['password'])
-                                self.send_gui_update('log', f"Report sent and password transferred to Arduino")
-                        except Exception as e:
-                            self.send_gui_update('log', f"Error in fall reporting: {str(e)}")
+                        # 서버 통신을 별도 스레드로 실행
+                        report_thread = ReportThread(self.report_client, self.arduino_comm, self.gui_queue)
+                        report_thread.start()
+                        
+#                        try:
+#                            report_result = self.report_client.send_fall_report()
+#                            if report_result and report_result.get('password'):
+#                                self.arduino_comm.send_password(report_result['password'])
+#                                self.send_gui_update('log', f"Report sent and password transferred to Arduino")
+#                        except Exception as e:
+#                            self.send_gui_update('log', f"Error in fall reporting: {str(e)}")
                 else:
                     remaining_time = self.fall_confirmation_time - elapsed_time
                     self.send_gui_update('status', ("VERIFYING", remaining_time))
