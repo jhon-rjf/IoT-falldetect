@@ -51,10 +51,9 @@ if __name__ == "__main__":
     # Get the default parser
     parser = get_default_parser()
     args = parser.parse_args()
-
-    # Modify input source for PiCamera if needed
-    if args.input == "picam":
-        args.input_source = "libcamera-src ! video/x-raw,width=640,height=480,framerate=30/1 ! videoconvert"
+    
+    # Set input to 'rpi' to use the Raspberry Pi camera
+    args.input = "rpi"
 
     # Create an instance of the user app callback class
     user_data = app_callback_class()
