@@ -13,30 +13,49 @@ from hailo_rpi_common import (
 )
 from pose_estimation_pipeline import GStreamerPoseEstimationApp
 
-class user_app_callback_class(app_callback_class):
+class CustomCallbackClass(app_callback_class):
     def __init__(self):
         super().__init__()
-        # Fall detection parameters
         self.height_ratio_threshold = 0.5
         self.angle_threshold = 60
         self.fall_history = deque(maxlen=5)
-        
-        # Detection confidence threshold
         self.confidence_threshold = 0.4
-        
-        # Tracking parameters
         self.tracks = defaultdict(lambda: {'positions': deque(maxlen=30), 
                                          'fall_scores': deque(maxlen=10)})
         self.next_track_id = 0
         self.track_max_distance = 100
-        
-        # Metrics
         self.current_height_ratio = 0
         self.current_body_angle = 0
         self.fall_score = 0
 
-    def calculate_height_ratio(self, points, bbox, width, height):
-        """Calculate height ratio with improved stability"""
+    def _calculate_body_angle(self, points, bbox, width, height):
+        try:
+            neck = points[1]
+            left_hip = points[11]
+            right_hip = points[12]
+            
+            neck_x = int((neck.x() * bbox.width() + bbox.xmin()) * width)
+            neck_y = int((neck.y() * bbox.height() + bbox.ymin()) * height)
+            left_hip_x = int((left_hip.x() * bbox.width() + bbox.xmin()) * width)
+            left_hip_y = int((left_hip.y() * bbox.height() + bbox.ymin()) * height)
+            right_hip_x = int((right_hip.x() * bbox.width() + bbox.xmin()) * width)
+            right_hip_y = int((right_hip.y() * bbox.height() + bbox.ymin()) * height)
+            
+            hip_mid_x = (left_hip_x + right_hip_x) / 2
+            hip_mid_y = (left_hip_y + right_hip_y) / 2
+            
+            dx = hip_mid_x - neck_x
+            dy = hip_mid_y - neck_y
+            angle = abs(np.degrees(np.arctan2(dx, dy)))
+            
+            if abs(angle - self.current_body_angle) > 30:
+                angle = self.current_body_angle * 0.7 + angle * 0.3
+            
+            return angle
+        except Exception:
+            return self.current_body_angle
+
+    def _calculate_height_ratio(self, points, bbox, width, height):
         try:
             head = points[0]
             left_ankle = points[15]
@@ -67,36 +86,7 @@ class user_app_callback_class(app_callback_class):
         except Exception:
             return self.current_height_ratio
 
-    def calculate_body_angle(self, points, bbox, width, height):
-        """Calculate angle of upper body with error handling"""
-        try:
-            neck = points[1]
-            left_hip = points[11]
-            right_hip = points[12]
-            
-            neck_x = int((neck.x() * bbox.width() + bbox.xmin()) * width)
-            neck_y = int((neck.y() * bbox.height() + bbox.ymin()) * height)
-            left_hip_x = int((left_hip.x() * bbox.width() + bbox.xmin()) * width)
-            left_hip_y = int((left_hip.y() * bbox.height() + bbox.ymin()) * height)
-            right_hip_x = int((right_hip.x() * bbox.width() + bbox.xmin()) * width)
-            right_hip_y = int((right_hip.y() * bbox.height() + bbox.ymin()) * height)
-            
-            hip_mid_x = (left_hip_x + right_hip_x) / 2
-            hip_mid_y = (left_hip_y + right_hip_y) / 2
-            
-            dx = hip_mid_x - neck_x
-            dy = hip_mid_y - neck_y
-            angle = abs(np.degrees(np.arctan2(dx, dy)))
-            
-            if abs(angle - self.current_body_angle) > 30:
-                angle = self.current_body_angle * 0.7 + angle * 0.3
-            
-            return angle
-        except Exception:
-            return self.current_body_angle
-
-    def get_track_id(self, bbox, width, height):
-        """Track objects across frames"""
+    def _get_track_id(self, bbox, width, height):
         center_x = int((bbox.xmin() + bbox.xmax()) * width / 2)
         center_y = int((bbox.ymin() + bbox.ymax()) * height / 2)
         current_pos = np.array([center_x, center_y])
@@ -120,9 +110,8 @@ class user_app_callback_class(app_callback_class):
         return best_track_id
 
     def detect_fall(self, points, bbox, width, height, track_id):
-        """Enhanced fall detection with tracking"""
-        self.current_height_ratio = self.calculate_height_ratio(points, bbox, width, height)
-        self.current_body_angle = self.calculate_body_angle(points, bbox, width, height)
+        self.current_height_ratio = self._calculate_height_ratio(points, bbox, width, height)
+        self.current_body_angle = self._calculate_body_angle(points, bbox, width, height)
         
         is_fall = (self.current_height_ratio < self.height_ratio_threshold or 
                   self.current_body_angle > self.angle_threshold)
@@ -135,7 +124,7 @@ class user_app_callback_class(app_callback_class):
         
         track_scores = self.tracks[track_id]['fall_scores']
         track_scores.append(current_score)
-        self.fall_score = sum(track_scores) / len(track_scores)
+        self.fall_score = sum(track_scores) / len(track_scores) if track_scores else 0
         
         return sum(self.fall_history) >= 3
 
@@ -165,7 +154,7 @@ def app_callback(pad, info, user_data):
                 points = landmarks[0].get_points()
                 
                 if len(points) >= 17:
-                    track_id = user_data.get_track_id(bbox, width, height)
+                    track_id = user_data._get_track_id(bbox, width, height)
                     is_falling = user_data.detect_fall(points, bbox, width, height, track_id)
                     
                     if user_data.use_frame:
@@ -174,7 +163,7 @@ def app_callback(pad, info, user_data):
                         x_max = int(bbox.xmax() * width)
                         y_max = int(bbox.ymax() * height)
                         
-                        # Display FDS score
+                        # Draw FDS score
                         cv2.putText(frame, f"FDS: {user_data.fall_score:.1f}",
                                   (x_min, y_min - 25),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)
@@ -182,7 +171,6 @@ def app_callback(pad, info, user_data):
                                   (x_min, y_min - 25),
                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                         
-                        # Display fall detection warning
                         if is_falling:
                             cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), 
                                         (0, 165, 255), 2)
@@ -190,7 +178,6 @@ def app_callback(pad, info, user_data):
                                       (x_min, y_min - 5),
                                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
                 
-                # Draw keypoints
                 if user_data.use_frame:
                     for point in points:
                         x = int((point.x() * bbox.width() + bbox.xmin()) * width)
@@ -205,6 +192,6 @@ def app_callback(pad, info, user_data):
     return Gst.PadProbeReturn.OK
 
 if __name__ == "__main__":
-    user_data = user_app_callback_class()
+    user_data = CustomCallbackClass()
     app = GStreamerPoseEstimationApp(app_callback, user_data)
     app.run()
