@@ -20,29 +20,11 @@ class CustomCallbackClass(app_callback_class):
         super().__init__()
         self.last_video_end_time = 0
         self.video_restart_delay = 5
-        # Initialize curses screen
-        self.screen = curses.initscr()
-        curses.start_color()
-        curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)    # For FALL DETECTED
-        curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK) # For WARNING
-        curses.init_pair(3, curses.COLOR_GREEN, curses.COLOR_BLACK)  # For MONITORING
-        self.screen.clear()
-        self.reset_state()
         
-    def cleanup(self):
-        """Clean up curses"""
-        curses.endwin()
-        
-    def reset_state(self):
-        """Reset all states when restarting video"""
-        self.update_display("[System] Resetting all detection states...")
+        # Initialize state variables first
         self.use_frame = True
-        
-        # Detection thresholds and parameters
         self.fall_history = deque(maxlen=5)
         self.confidence_threshold = 0.4
-        
-        # Tracking parameters
         self.tracks = defaultdict(lambda: {
             'positions': deque(maxlen=30),
             'head_positions': deque(maxlen=10),
@@ -51,12 +33,32 @@ class CustomCallbackClass(app_callback_class):
         })
         self.next_track_id = 0
         self.track_max_distance = 100
-        
-        # Fall detection parameters
         self.head_drop_threshold = 0.02
         self.fall_detection_active = False
         self.detection_status = "MONITORING"
         self.fall_score = 0
+        
+        # Initialize curses screen
+        self.screen = curses.initscr()
+        curses.start_color()
+        curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)    # For FALL DETECTED
+        curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK) # For WARNING
+        curses.init_pair(3, curses.COLOR_GREEN, curses.COLOR_BLACK)  # For MONITORING
+        self.screen.clear()
+        
+    def cleanup(self):
+        """Clean up curses"""
+        curses.endwin()
+        
+    def reset_state(self):
+        """Reset all states when restarting video"""
+        self.fall_history.clear()
+        self.tracks.clear()
+        self.next_track_id = 0
+        self.fall_detection_active = False
+        self.detection_status = "MONITORING"
+        self.fall_score = 0
+        self.update_display("[System] Resetting all detection states...")
         
     def update_display(self, message=None):
         """Update the terminal display"""
@@ -201,9 +203,11 @@ def app_callback(pad, info, user_data):
     return Gst.PadProbeReturn.OK
 
 if __name__ == "__main__":
+    user_data = None
     try:
         user_data = CustomCallbackClass()
         app = GStreamerPoseEstimationApp(app_callback, user_data)
         app.run()
     finally:
-        user_data.cleanup()  # Ensure proper cleanup of curses
+        if user_data:
+            user_data.cleanup()
