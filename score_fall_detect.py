@@ -5,6 +5,7 @@ import os
 import numpy as np
 import cv2
 import hailo
+import time
 from collections import deque, defaultdict
 from hailo_rpi_common import (
     get_caps_from_pad,
@@ -26,16 +27,19 @@ class CustomCallbackClass(app_callback_class):
         self.tracks = defaultdict(lambda: {
             'positions': deque(maxlen=30),
             'head_positions': deque(maxlen=10),
-            'fall_scores': deque(maxlen=10)
+            'fall_scores': deque(maxlen=10),
+            'last_fall_time': 0,
+            'is_fallen': False
         })
         self.next_track_id = 0
         self.track_max_distance = 100
         
         # Fall detection parameters
-        self.head_drop_threshold = 0.05
+        self.head_drop_threshold = 0.02  # 더 민감하게 조정 (2%)
         self.fall_detection_active = False
         self.detection_status = "MONITORING"
         self.fall_score = 0
+        self.fall_cooldown = 10  # 10초 동안 상태 유지
         
     def _get_track_id(self, bbox, width, height):
         center_x = int((bbox.xmin() + bbox.xmax()) * width / 2)
@@ -62,11 +66,18 @@ class CustomCallbackClass(app_callback_class):
 
     def detect_fall(self, points, bbox, width, height, track_id):
         try:
+            current_time = time.time()
+            track = self.tracks[track_id]
+            
+            # 이미 넘어진 상태이고 10초가 지나지 않았다면 계속 넘어진 상태 유지
+            if track['is_fallen'] and (current_time - track['last_fall_time']) < self.fall_cooldown:
+                self.fall_detection_active = True
+                return True
+                
             # Get head position
             head = points[0]
             head_y = int((head.y() * bbox.height() + bbox.ymin()) * height)
             
-            track = self.tracks[track_id]
             track['head_positions'].append(head_y)
             
             if len(track['head_positions']) < 2:
@@ -75,16 +86,28 @@ class CustomCallbackClass(app_callback_class):
             prev_head_y = track['head_positions'][-2]
             head_drop = (head_y - prev_head_y) / height
             
+            # 바운딩 박스의 높이 변화도 고려
+            bbox_height = bbox.ymax() - bbox.ymin()
+            if len(track['positions']) >= 2:
+                prev_pos = track['positions'][-2]
+                curr_pos = track['positions'][-1]
+                pos_change = abs(curr_pos[1] - prev_pos[1]) / height
+                head_drop = head_drop + (pos_change * 0.5)  # 위치 변화를 50% 반영
+            
             is_fall = head_drop > self.head_drop_threshold
             
             self.fall_history.append(is_fall)
-            self.fall_detection_active = sum(self.fall_history) >= 2
+            self.fall_detection_active = sum(self.fall_history) >= 2  # 5프레임 중 2회로 완화
             
-            current_score = min(100, abs(head_drop * 300))
+            # Fall score 계산 방식 강화
+            current_score = min(100, abs(head_drop * 500))  # 가중치 5배 증가
             track['fall_scores'].append(current_score)
             self.fall_score = sum(track['fall_scores']) / len(track['fall_scores'])
             
+            # 낙상이 감지되면 시간 기록
             if self.fall_detection_active:
+                track['is_fallen'] = True
+                track['last_fall_time'] = current_time
                 print("\033[91m[FALL DETECTED]\033[0m Fall Score: {:.1f}".format(self.fall_score))
             elif self.fall_score > 50:
                 print("\033[93m[WARNING]\033[0m Fall Score: {:.1f}".format(self.fall_score))
