@@ -10,8 +10,44 @@ from hailo_rpi_common import (
     get_numpy_from_buffer,
     app_callback_class,
     get_default_parser,
+    QUEUE,
+    INFERENCE_PIPELINE,
+    USER_CALLBACK_PIPELINE,
+    DISPLAY_PIPELINE,
 )
 from detection_pipeline import GStreamerDetectionApp
+
+class CustomGStreamerDetectionApp(GStreamerDetectionApp):
+    def get_pipeline_string(self):
+        # PiCamera source pipeline
+        source_pipeline = (
+            f'libcamerasrc ! '
+            f'video/x-raw,format=RGB,width=640,height=480,framerate=30/1 ! '
+            f'{QUEUE(name="source_convert_q")} ! '
+            f'videoconvert n-threads=3 name=source_convert qos=false ! '
+            f'video/x-raw,format=RGB,pixel-aspect-ratio=1/1'
+        )
+        
+        # Get the rest of the pipeline from parent class configuration
+        detection_pipeline = INFERENCE_PIPELINE(
+            hef_path=self.hef_path,
+            post_process_so=self.post_process_so,
+            batch_size=self.batch_size,
+            additional_params=self.thresholds_str)
+            
+        user_callback_pipeline = USER_CALLBACK_PIPELINE()
+        display_pipeline = DISPLAY_PIPELINE(video_sink=self.video_sink, sync=self.sync, show_fps=self.show_fps)
+        
+        # Combine all pipeline parts
+        pipeline_string = (
+            f'{source_pipeline} ! '
+            f'{detection_pipeline} ! '
+            f'{user_callback_pipeline} ! '
+            f'{display_pipeline}'
+        )
+        
+        print(pipeline_string)
+        return pipeline_string
 
 def app_callback(pad, info, user_data):
     buffer = info.get_buffer()
@@ -51,13 +87,10 @@ if __name__ == "__main__":
     # Get the default parser
     parser = get_default_parser()
     args = parser.parse_args()
-    
-    # Set input to 'rpi' to use the Raspberry Pi camera
-    args.input = "rpi"
 
     # Create an instance of the user app callback class
     user_data = app_callback_class()
     
-    # Create and run the detection app
-    app = GStreamerDetectionApp(app_callback, user_data)
+    # Create and run the detection app with custom pipeline
+    app = CustomGStreamerDetectionApp(app_callback, user_data)
     app.run()
