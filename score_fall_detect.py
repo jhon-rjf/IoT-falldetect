@@ -40,6 +40,7 @@ class CustomCallbackClass(app_callback_class):
         self.fall_score = 0
         self.fall_frame = None
         self.fall_detection_time = None
+        self.frame_count = 0
         
         # Video recording variables
         self.frame_buffer = deque(maxlen=120)
@@ -55,13 +56,20 @@ class CustomCallbackClass(app_callback_class):
         curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)
         curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)
         curses.init_pair(3, curses.COLOR_GREEN, curses.COLOR_BLACK)
-        curses.curs_set(0)  # Hide cursor
-        self.screen.nodelay(1)  # Non-blocking input
+        curses.noecho()
+        curses.cbreak()
+        self.screen.keypad(1)
+        self.screen.nodelay(1)
+        curses.curs_set(0)
         self.screen.clear()
+        self.screen.refresh()
         
     def cleanup(self):
         if self.video_writer:
             self.video_writer.release()
+        curses.nocbreak()
+        self.screen.keypad(0)
+        curses.echo()
         curses.endwin()
         
     def reset_state(self):
@@ -143,9 +151,60 @@ class CustomCallbackClass(app_callback_class):
             
             self.screen.refresh()
         except Exception as e:
-            pass  # Silently handle any curses errors
-        
-    def get_track_id(self, bbox, width, height):  # Changed from _get_track_id to get_track_id
+            pass
+
+    def detect_fall(self, points, bbox, width, height, track_id):
+        try:
+            track = self.tracks[track_id]
+            
+            head = points[0]
+            head_y = int((head.y() * bbox.height() + bbox.ymin()) * height)
+            
+            track['head_positions'].append(head_y)
+            
+            if len(track['head_positions']) < 2:
+                return False
+                
+            prev_head_y = track['head_positions'][-2]
+            head_drop = (head_y - prev_head_y) / height
+            
+            if len(track['positions']) >= 2:
+                prev_pos = track['positions'][-2]
+                curr_pos = track['positions'][-1]
+                pos_change = abs(curr_pos[1] - prev_pos[1]) / height
+                head_drop = head_drop + (pos_change * 0.5)
+            
+            is_fall = head_drop > self.head_drop_threshold
+            
+            self.fall_history.append(is_fall)
+            was_active = self.fall_detection_active
+            self.fall_detection_active = sum(self.fall_history) >= 2
+            
+            if self.fall_detection_active and not was_active:
+                self.fall_frame = self.frame_count
+                self.fall_detection_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if hasattr(self, 'current_frame') and self.current_frame is not None:
+                    self.start_recording(self.current_frame)
+            
+            current_score = min(100, abs(head_drop * 500))
+            track['fall_scores'].append(current_score)
+            self.fall_score = sum(track['fall_scores']) / len(track['fall_scores'])
+            
+            if self.fall_detection_active:
+                track['is_fallen'] = True
+                self.update_display(f"Fall detected at {self.fall_detection_time}!")
+            elif self.fall_score > 50:
+                self.update_display("Warning: High fall risk")
+            else:
+                self.update_display("Normal monitoring")
+            
+            return is_fall
+            
+        except Exception as e:
+            self.update_display(f"Error in fall detection: {str(e)}")
+            return False
+            
+    def get_track_id(self, bbox, width, height):
         center_x = int((bbox.xmin() + bbox.xmax()) * width / 2)
         center_y = int((bbox.ymin() + bbox.ymax()) * height / 2)
         current_pos = np.array([center_x, center_y])
@@ -208,7 +267,7 @@ def app_callback(pad, info, user_data):
                 points = landmarks[0].get_points()
                 
                 if len(points) >= 17:
-                    track_id = user_data.get_track_id(bbox, width, height)  # Changed from _get_track_id
+                    track_id = user_data.get_track_id(bbox, width, height)
                     is_falling = user_data.detect_fall(points, bbox, width, height, track_id)
 
     return Gst.PadProbeReturn.OK
@@ -218,7 +277,7 @@ if __name__ == "__main__":
     try:
         user_data = CustomCallbackClass()
         
-        # Suppress FPS output from GStreamerPoseEstimationApp
+        # Suppress FPS output
         import sys
         original_stdout = sys.stdout
         sys.stdout = open(os.devnull, 'w')
