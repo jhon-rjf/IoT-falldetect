@@ -153,10 +153,10 @@ class CustomCallbackClass(app_callback_class):
         self.fall_detection_timestamp = None
         self.confirmed_fall = False
         self.fall_track_id = None
-        self.movement_threshold = 0.03
+        self.movement_threshold = 0.05
         self.fall_confirmation_time = 5.0
         self.wrist_movement_threshold = 0.015
-        self.head_drop_threshold = 0.02
+        self.head_drop_threshold = 0.04
         self.next_track_id = 0
         self.track_max_distance = 100
         self.movement_check_delay = 2.0
@@ -264,7 +264,7 @@ class CustomCallbackClass(app_callback_class):
 
             if (self.fall_detection_timestamp or self.confirmed_fall):
                 time_since_detection = current_time - (self.fall_detection_timestamp or 0)
-                if time_since_detection > self.movement_check_delay and self.fall_score >= 5:
+                if time_since_detection > self.movement_check_delay and self.fall_score >= 2:
                     self.fall_detection_timestamp = None
                     self.fall_track_id = None
                     self.confirmed_fall = False
