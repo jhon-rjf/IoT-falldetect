@@ -1,12 +1,12 @@
 import gi
 gi.require_version('Gst', '1.0')
+import curses
 from gi.repository import Gst, GLib
 import os
 import numpy as np
 import cv2
 import hailo
 import time
-import curses
 from collections import deque, defaultdict
 from hailo_rpi_common import (
     get_caps_from_pad,
@@ -18,7 +18,7 @@ from pose_estimation_pipeline import GStreamerPoseEstimationApp
 class CustomCallbackClass(app_callback_class):
     def __init__(self):
         super().__init__()
-        self.last_video_end_time = 0
+        self.last_video_time = 0
         self.video_restart_delay = 5
         self.first_run = True
         
@@ -179,18 +179,22 @@ def app_callback(pad, info, user_data):
     buffer = info.get_buffer()
     if buffer is None:
         return Gst.PadProbeReturn.OK
-
-    user_data.increment()
-    format, width, height = get_caps_from_pad(pad)
-
+    
+    current_time = time.time()
+    
     # Check if this is first frame of video
     if user_data.frame_count == 1:
         if user_data.first_run:
             user_data.first_run = False
+            user_data.last_video_time = current_time
         else:
-            user_data.update_display("Waiting 5 seconds before starting next video...")
-            time.sleep(5)
+            if current_time - user_data.last_video_time < user_data.video_restart_delay:
+                return Gst.PadProbeReturn.OK  # Skip frames until delay is over
+            user_data.last_video_time = current_time
         user_data.reset_state()
+
+    user_data.increment()
+    format, width, height = get_caps_from_pad(pad)
 
     frame = None
     if user_data.use_frame and format is not None and width is not None and height is not None:
