@@ -26,12 +26,26 @@ class PiCameraDetection:
             main={"size": (self.width, self.height), "format": "RGB888"}
         ))
         
-        # Create simplified GStreamer pipeline
+        # Create pipeline with post-processing elements
         pipeline_str = (
             f"appsrc name=source ! "
             f"videoconvert ! "
-            f"hailo_net config-path=/usr/local/hailo/detection.hef ! "
-            f"fakesink name=hailo_sink sync=false"
+            f"video/x-raw,format=RGB ! "
+            f"tee name=t ! "
+            f"queue ! "
+            f"hailonet config-path=/usr/local/hailo/detection.hef ! "
+            f"queue ! "
+            f"hailofilter function-name=filter_by_score min-score=0.4 ! "
+            f"queue ! "
+            f"hailotracker name=hailo_tracker tracking-type=bytetrack iou-threshold=0.5 ! "
+            f"queue ! "
+            f"hailooverlay ! "
+            f"queue ! "
+            f"videoconvert ! "
+            f"autovideosink "
+            f"t. ! "
+            f"queue ! "
+            f"fakesink name=hailo_sink"
         )
         
         self.pipeline = Gst.parse_launch(pipeline_str)
@@ -42,6 +56,10 @@ class PiCameraDetection:
             f'video/x-raw,format=RGB,width={self.width},height={self.height},framerate=30/1'
         )
         self.appsrc.set_caps(caps)
+        
+        # Configure appsrc
+        self.appsrc.set_property('format', Gst.Format.TIME)
+        self.appsrc.set_property('do-timestamp', True)
         
     def frame_callback(self):
         while True:
