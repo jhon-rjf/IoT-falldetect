@@ -6,6 +6,7 @@ import numpy as np
 import cv2
 import hailo
 import time
+import curses
 from collections import deque, defaultdict
 from hailo_rpi_common import (
     get_caps_from_pad,
@@ -19,11 +20,22 @@ class CustomCallbackClass(app_callback_class):
         super().__init__()
         self.last_video_end_time = 0
         self.video_restart_delay = 5
+        # Initialize curses screen
+        self.screen = curses.initscr()
+        curses.start_color()
+        curses.init_pair(1, curses.COLOR_RED, curses.COLOR_BLACK)    # For FALL DETECTED
+        curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK) # For WARNING
+        curses.init_pair(3, curses.COLOR_GREEN, curses.COLOR_BLACK)  # For MONITORING
+        self.screen.clear()
         self.reset_state()
+        
+    def cleanup(self):
+        """Clean up curses"""
+        curses.endwin()
         
     def reset_state(self):
         """Reset all states when restarting video"""
-        print("\n[System] Resetting all detection states...")
+        self.update_display("[System] Resetting all detection states...")
         self.use_frame = True
         
         # Detection thresholds and parameters
@@ -45,6 +57,40 @@ class CustomCallbackClass(app_callback_class):
         self.fall_detection_active = False
         self.detection_status = "MONITORING"
         self.fall_score = 0
+        
+    def update_display(self, message=None):
+        """Update the terminal display"""
+        self.screen.clear()
+        
+        # Draw border
+        self.screen.addstr(0, 0, "+" + "-" * 58 + "+")
+        for i in range(1, 10):
+            self.screen.addstr(i, 0, "|")
+            self.screen.addstr(i, 59, "|")
+        self.screen.addstr(10, 0, "+" + "-" * 58 + "+")
+        
+        # Title
+        self.screen.addstr(1, 25, "Fall Detection System")
+        
+        # Status information
+        self.screen.addstr(3, 2, "Current Status:")
+        
+        # Different colors for different states
+        if self.fall_detection_active:
+            self.screen.addstr(4, 2, "[ FALL DETECTED ]", curses.color_pair(1) | curses.A_BOLD)
+        elif self.fall_score > 50:
+            self.screen.addstr(4, 2, "[ WARNING ]", curses.color_pair(2) | curses.A_BOLD)
+        else:
+            self.screen.addstr(4, 2, "[ MONITORING ]", curses.color_pair(3) | curses.A_BOLD)
+            
+        self.screen.addstr(5, 2, f"Fall Score: {self.fall_score:.1f}")
+        self.screen.addstr(6, 2, f"Active Tracks: {len(self.tracks)}")
+        
+        # Latest message
+        if message:
+            self.screen.addstr(8, 2, f"Last Event: {message}")
+        
+        self.screen.refresh()
         
     def _get_track_id(self, bbox, width, height):
         center_x = int((bbox.xmin() + bbox.xmax()) * width / 2)
@@ -102,16 +148,16 @@ class CustomCallbackClass(app_callback_class):
             
             if self.fall_detection_active:
                 track['is_fallen'] = True
-                print("\033[91m[FALL DETECTED]\033[0m Fall Score: {:.1f}".format(self.fall_score))
+                self.update_display("Fall detected!")
             elif self.fall_score > 50:
-                print("\033[93m[WARNING]\033[0m Fall Score: {:.1f}".format(self.fall_score))
+                self.update_display("Warning: High fall risk")
             else:
-                print("\033[92m[MONITORING]\033[0m Fall Score: {:.1f}".format(self.fall_score))
+                self.update_display("Normal monitoring")
             
             return is_fall
             
         except Exception as e:
-            print(f"Error in fall detection: {e}")
+            self.update_display(f"Error in fall detection: {e}")
             return False
 
 def app_callback(pad, info, user_data):
@@ -122,10 +168,9 @@ def app_callback(pad, info, user_data):
     user_data.increment()
     format, width, height = get_caps_from_pad(pad)
 
-    # Handle video end
-    if user_data.frame_count == 1:  # Video restart
-        print("\n[System] Waiting for 5 seconds before starting next video...")
-        time.sleep(5)  # Simplified delay implementation
+    if user_data.frame_count == 1:
+        user_data.update_display("Waiting 5 seconds before starting next video...")
+        time.sleep(5)
         user_data.reset_state()
 
     frame = None
@@ -156,6 +201,9 @@ def app_callback(pad, info, user_data):
     return Gst.PadProbeReturn.OK
 
 if __name__ == "__main__":
-    user_data = CustomCallbackClass()
-    app = GStreamerPoseEstimationApp(app_callback, user_data)
-    app.run()
+    try:
+        user_data = CustomCallbackClass()
+        app = GStreamerPoseEstimationApp(app_callback, user_data)
+        app.run()
+    finally:
+        user_data.cleanup()  # Ensure proper cleanup of curses
