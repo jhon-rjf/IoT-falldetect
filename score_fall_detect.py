@@ -17,6 +17,10 @@ from pose_estimation_pipeline import GStreamerPoseEstimationApp
 class CustomCallbackClass(app_callback_class):
     def __init__(self):
         super().__init__()
+        self.reset_state()
+        
+    def reset_state(self):
+        """비디오 재시작 시 모든 상태를 초기화하는 메서드"""
         self.use_frame = True
         
         # Detection thresholds and parameters
@@ -35,11 +39,11 @@ class CustomCallbackClass(app_callback_class):
         self.track_max_distance = 100
         
         # Fall detection parameters
-        self.head_drop_threshold = 0.02  # 더 민감하게 조정 (2%)
+        self.head_drop_threshold = 0.02
         self.fall_detection_active = False
         self.detection_status = "MONITORING"
         self.fall_score = 0
-        self.fall_cooldown = 10  # 10초 동안 상태 유지
+        self.fall_cooldown = 10
         
     def _get_track_id(self, bbox, width, height):
         center_x = int((bbox.xmin() + bbox.xmax()) * width / 2)
@@ -69,12 +73,10 @@ class CustomCallbackClass(app_callback_class):
             current_time = time.time()
             track = self.tracks[track_id]
             
-            # 이미 넘어진 상태이고 10초가 지나지 않았다면 계속 넘어진 상태 유지
             if track['is_fallen'] and (current_time - track['last_fall_time']) < self.fall_cooldown:
                 self.fall_detection_active = True
                 return True
                 
-            # Get head position
             head = points[0]
             head_y = int((head.y() * bbox.height() + bbox.ymin()) * height)
             
@@ -86,25 +88,22 @@ class CustomCallbackClass(app_callback_class):
             prev_head_y = track['head_positions'][-2]
             head_drop = (head_y - prev_head_y) / height
             
-            # 바운딩 박스의 높이 변화도 고려
             bbox_height = bbox.ymax() - bbox.ymin()
             if len(track['positions']) >= 2:
                 prev_pos = track['positions'][-2]
                 curr_pos = track['positions'][-1]
                 pos_change = abs(curr_pos[1] - prev_pos[1]) / height
-                head_drop = head_drop + (pos_change * 0.5)  # 위치 변화를 50% 반영
+                head_drop = head_drop + (pos_change * 0.5)
             
             is_fall = head_drop > self.head_drop_threshold
             
             self.fall_history.append(is_fall)
-            self.fall_detection_active = sum(self.fall_history) >= 2  # 5프레임 중 2회로 완화
+            self.fall_detection_active = sum(self.fall_history) >= 2
             
-            # Fall score 계산 방식 강화
-            current_score = min(100, abs(head_drop * 500))  # 가중치 5배 증가
+            current_score = min(100, abs(head_drop * 500))
             track['fall_scores'].append(current_score)
             self.fall_score = sum(track['fall_scores']) / len(track['fall_scores'])
             
-            # 낙상이 감지되면 시간 기록
             if self.fall_detection_active:
                 track['is_fallen'] = True
                 track['last_fall_time'] = current_time
@@ -127,6 +126,10 @@ def app_callback(pad, info, user_data):
 
     user_data.increment()
     format, width, height = get_caps_from_pad(pad)
+
+    # Check if this is the start of a new video
+    if user_data.frame_count == 1:  # 첫 프레임일 때 초기화
+        user_data.reset_state()
 
     frame = None
     if user_data.use_frame and format is not None and width is not None and height is not None:
