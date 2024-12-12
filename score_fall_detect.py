@@ -5,7 +5,7 @@ import os
 import numpy as np
 import cv2
 import hailo
-from collections import deque
+from collections import deque, defaultdict
 from hailo_rpi_common import (
     get_caps_from_pad,
     get_numpy_from_buffer,
@@ -13,73 +13,90 @@ from hailo_rpi_common import (
 )
 from pose_estimation_pipeline import GStreamerPoseEstimationApp
 
-# -----------------------------------------------------------------------------------------------
-# User-defined class to be used in the callback function
-# -----------------------------------------------------------------------------------------------
 class user_app_callback_class(app_callback_class):
     def __init__(self):
         super().__init__()
-        # Parameters for fall detection
+        # Fall detection parameters
         self.height_ratio_threshold = 0.5
         self.angle_threshold = 60
         self.fall_history = deque(maxlen=5)
-        # Variables to store current metrics
+        
+        # Detection confidence threshold
+        self.confidence_threshold = 0.4  # Lowered threshold for better detection
+        
+        # Tracking parameters
+        self.tracks = defaultdict(lambda: {'positions': deque(maxlen=30), 
+                                         'fall_scores': deque(maxlen=10)})
+        self.next_track_id = 0
+        self.track_max_distance = 100  # Maximum pixel distance for track association
+        
+        # Metrics
         self.current_height_ratio = 0
         self.current_body_angle = 0
         self.fall_score = 0
 
     def calculate_height_ratio(self, points, bbox, width, height):
-        """Calculate height ratio between head and ankles"""
-        head = points[0]  # nose keypoint
-        left_ankle = points[15]
-        right_ankle = points[16]
-        
-        # Convert normalized coordinates to actual coordinates
-        head_x = int((head.x() * bbox.width() + bbox.xmin()) * width)
-        head_y = int((head.y() * bbox.height() + bbox.ymin()) * height)
-        left_ankle_x = int((left_ankle.x() * bbox.width() + bbox.xmin()) * width)
-        left_ankle_y = int((left_ankle.y() * bbox.height() + bbox.ymin()) * height)
-        right_ankle_x = int((right_ankle.x() * bbox.width() + bbox.xmin()) * width)
-        right_ankle_y = int((right_ankle.y() * bbox.height() + bbox.ymin()) * height)
-        
-        # Calculate midpoint of ankles
-        ankle_mid_x = (left_ankle_x + right_ankle_x) / 2
-        ankle_mid_y = (left_ankle_y + right_ankle_y) / 2
-        
-        # Calculate vertical and horizontal distances
-        vertical_dist = abs(head_y - ankle_mid_y)
-        horizontal_dist = abs(head_x - ankle_mid_x)
-        
-        if horizontal_dist == 0:
-            return float('inf')
-        return vertical_dist / horizontal_dist
+        """Calculate height ratio with improved stability"""
+        try:
+            head = points[0]
+            left_ankle = points[15]
+            right_ankle = points[16]
+            
+            head_x = int((head.x() * bbox.width() + bbox.xmin()) * width)
+            head_y = int((head.y() * bbox.height() + bbox.ymin()) * height)
+            left_ankle_x = int((left_ankle.x() * bbox.width() + bbox.xmin()) * width)
+            left_ankle_y = int((left_ankle.y() * bbox.height() + bbox.ymin()) * height)
+            right_ankle_x = int((right_ankle.x() * bbox.width() + bbox.xmin()) * width)
+            right_ankle_y = int((right_ankle.y() * bbox.height() + bbox.ymin()) * height)
+            
+            ankle_mid_x = (left_ankle_x + right_ankle_x) / 2
+            ankle_mid_y = (left_ankle_y + right_ankle_y) / 2
+            
+            vertical_dist = abs(head_y - ankle_mid_y)
+            horizontal_dist = abs(head_x - ankle_mid_x)
+            
+            if horizontal_dist < 1:  # Prevent division by very small numbers
+                return self.current_height_ratio  # Return previous value for stability
+                
+            ratio = vertical_dist / horizontal_dist
+            
+            # Smoothing
+            if abs(ratio - self.current_height_ratio) > 2:  # Sudden large changes
+                ratio = self.current_height_ratio * 0.7 + ratio * 0.3  # More weight to previous value
+                
+            return ratio
+        except Exception:
+            return self.current_height_ratio
 
-    def calculate_body_angle(self, points, bbox, width, height):
-        """Calculate angle of upper body"""
-        neck = points[1]
-        left_hip = points[11]
-        right_hip = points[12]
+    def get_track_id(self, bbox, width, height):
+        """Track objects across frames"""
+        center_x = int((bbox.xmin() + bbox.xmax()) * width / 2)
+        center_y = int((bbox.ymin() + bbox.ymax()) * height / 2)
+        current_pos = np.array([center_x, center_y])
         
-        # Convert normalized coordinates to actual coordinates
-        neck_x = int((neck.x() * bbox.width() + bbox.xmin()) * width)
-        neck_y = int((neck.y() * bbox.height() + bbox.ymin()) * height)
-        left_hip_x = int((left_hip.x() * bbox.width() + bbox.xmin()) * width)
-        left_hip_y = int((left_hip.y() * bbox.height() + bbox.ymin()) * height)
-        right_hip_x = int((right_hip.x() * bbox.width() + bbox.xmin()) * width)
-        right_hip_y = int((right_hip.y() * bbox.height() + bbox.ymin()) * height)
+        # Find closest track
+        min_dist = float('inf')
+        best_track_id = None
         
-        # Calculate hip midpoint
-        hip_mid_x = (left_hip_x + right_hip_x) / 2
-        hip_mid_y = (left_hip_y + right_hip_y) / 2
+        for track_id, track_info in self.tracks.items():
+            if track_info['positions']:
+                last_pos = np.array(track_info['positions'][-1])
+                dist = np.linalg.norm(current_pos - last_pos)
+                if dist < min_dist and dist < self.track_max_distance:
+                    min_dist = dist
+                    best_track_id = track_id
         
-        # Calculate angle
-        dx = hip_mid_x - neck_x
-        dy = hip_mid_y - neck_y
-        angle = abs(np.degrees(np.arctan2(dx, dy)))
-        return angle
+        if best_track_id is None:
+            # Create new track
+            best_track_id = self.next_track_id
+            self.next_track_id += 1
+            
+        # Update track position
+        self.tracks[best_track_id]['positions'].append(current_pos)
+        return best_track_id
 
-    def detect_fall(self, points, bbox, width, height):
-        """Detect if a fall has occurred and calculate fall score"""
+    def detect_fall(self, points, bbox, width, height, track_id):
+        """Enhanced fall detection with tracking"""
         self.current_height_ratio = self.calculate_height_ratio(points, bbox, width, height)
         self.current_body_angle = self.calculate_body_angle(points, bbox, width, height)
         
@@ -88,24 +105,24 @@ class user_app_callback_class(app_callback_class):
         
         self.fall_history.append(is_fall)
         
-        # Calculate fall score (0-100)
+        # Calculate more stable fall score
         height_score = max(0, min(100, (1 - self.current_height_ratio) * 100))
         angle_score = max(0, min(100, (self.current_body_angle / 90) * 100))
-        self.fall_score = max(height_score, angle_score)
+        current_score = max(height_score, angle_score)
+        
+        # Track-specific fall score smoothing
+        track_scores = self.tracks[track_id]['fall_scores']
+        track_scores.append(current_score)
+        self.fall_score = sum(track_scores) / len(track_scores)
         
         return sum(self.fall_history) >= 3
 
-# -----------------------------------------------------------------------------------------------
-# User-defined callback function
-# -----------------------------------------------------------------------------------------------
 def app_callback(pad, info, user_data):
     buffer = info.get_buffer()
     if buffer is None:
         return Gst.PadProbeReturn.OK
 
     user_data.increment()
-    string_to_print = f"Frame count: {user_data.get_count()}\n"
-
     format, width, height = get_caps_from_pad(pad)
 
     frame = None
@@ -120,15 +137,14 @@ def app_callback(pad, info, user_data):
         bbox = detection.get_bbox()
         confidence = detection.get_confidence()
         
-        if label == "person":
-            string_to_print += f"Detection: {label} {confidence:.2f}\n"
-            
+        if label == "person" and confidence > user_data.confidence_threshold:
             landmarks = detection.get_objects_typed(hailo.HAILO_LANDMARKS)
             if len(landmarks) != 0:
                 points = landmarks[0].get_points()
                 
                 if len(points) >= 17:
-                    is_falling = user_data.detect_fall(points, bbox, width, height)
+                    track_id = user_data.get_track_id(bbox, width, height)
+                    is_falling = user_data.detect_fall(points, bbox, width, height, track_id)
                     
                     if user_data.use_frame:
                         x_min = int(bbox.xmin() * width)
@@ -136,63 +152,35 @@ def app_callback(pad, info, user_data):
                         x_max = int(bbox.xmax() * width)
                         y_max = int(bbox.ymax() * height)
                         
-                        # Display metrics
-                        metrics_text = [
-                            f"Fall Score: {user_data.fall_score:.1f}%",
-                            f"Height Ratio: {user_data.current_height_ratio:.2f}",
-                            f"Body Angle: {user_data.current_body_angle:.1f}deg"
-                        ]
+                        # Simple score display
+                        cv2.putText(frame, f"FDS: {user_data.fall_score:.1f}",
+                                  (x_min, y_min - 25),
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 4)
+                        cv2.putText(frame, f"FDS: {user_data.fall_score:.1f}",
+                                  (x_min, y_min - 25),
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
                         
-                        # Draw metrics background and text
-                        for i, text in enumerate(metrics_text):
-                            text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 
-                                                      0.7, 2)[0]
-                            cv2.rectangle(frame,
-                                        (x_min, y_max + 5 + (i * 25)),
-                                        (x_min + text_size[0], y_max + 25 + (i * 25)),
-                                        (0, 0, 0), -1)
-                            cv2.putText(frame, text,
-                                      (x_min, y_max + 20 + (i * 25)),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                        
-                        # Draw fall detection warning if detected
                         if is_falling:
-                            text = "FALLDOWN DETECT"
-                            font = cv2.FONT_HERSHEY_SIMPLEX
-                            font_scale = 1
-                            thickness = 2
-                            text_size = cv2.getTextSize(text, font, font_scale, thickness)[0]
-                            
-                            # Orange warning box
                             cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), 
                                         (0, 165, 255), 2)
-                            # Orange background for text
-                            cv2.rectangle(frame, 
-                                        (x_min, y_min - text_size[1] - 10),
-                                        (x_min + text_size[0], y_min),
-                                        (0, 165, 255), -1)
-                            # Black text
-                            cv2.putText(frame, text, 
+                            cv2.putText(frame, "FALLDOWN DETECT", 
                                       (x_min, y_min - 5),
-                                      font, font_scale, (0, 0, 0), thickness)
+                                      cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 2)
                 
-                # Visualize keypoints
+                # Keypoint visualization with improved visibility
                 if user_data.use_frame:
                     for point in points:
                         x = int((point.x() * bbox.width() + bbox.xmin()) * width)
                         y = int((point.y() * bbox.height() + bbox.ymin()) * height)
-                        cv2.circle(frame, (x, y), 3, (0, 255, 0), -1)
+                        cv2.circle(frame, (x, y), 4, (0, 0, 0), -1)  # Larger black outline
+                        cv2.circle(frame, (x, y), 3, (0, 255, 0), -1)  # Green center
 
     if user_data.use_frame:
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         user_data.set_frame(frame)
 
-    print(string_to_print)
     return Gst.PadProbeReturn.OK
 
-# -----------------------------------------------------------------------------------------------
-# Main execution
-# -----------------------------------------------------------------------------------------------
 if __name__ == "__main__":
     user_data = user_app_callback_class()
     app = GStreamerPoseEstimationApp(app_callback, user_data)
