@@ -18,9 +18,12 @@ class CustomCallbackClass(app_callback_class):
     def __init__(self):
         super().__init__()
         self.reset_state()
+        self.last_video_end_time = 0
+        self.video_restart_delay = 5  # 5 seconds delay before video restart
         
     def reset_state(self):
-        """비디오 재시작 시 모든 상태를 초기화하는 메서드"""
+        """Reset all states when restarting video"""
+        print("\n[System] Resetting all detection states...")
         self.use_frame = True
         
         # Detection thresholds and parameters
@@ -43,7 +46,7 @@ class CustomCallbackClass(app_callback_class):
         self.fall_detection_active = False
         self.detection_status = "MONITORING"
         self.fall_score = 0
-        self.fall_cooldown = 10
+        self.fall_cooldown = 3  # Changed from 10 to 3 seconds
         
     def _get_track_id(self, bbox, width, height):
         center_x = int((bbox.xmin() + bbox.xmax()) * width / 2)
@@ -73,6 +76,7 @@ class CustomCallbackClass(app_callback_class):
             current_time = time.time()
             track = self.tracks[track_id]
             
+            # If already fallen and within cooldown period, maintain fall state
             if track['is_fallen'] and (current_time - track['last_fall_time']) < self.fall_cooldown:
                 self.fall_detection_active = True
                 return True
@@ -127,8 +131,11 @@ def app_callback(pad, info, user_data):
     user_data.increment()
     format, width, height = get_caps_from_pad(pad)
 
-    # Check if this is the start of a new video
-    if user_data.frame_count == 1:  # 첫 프레임일 때 초기화
+    # Handle video restart with delay
+    current_time = time.time()
+    if user_data.frame_count == 1:
+        if current_time - user_data.last_video_end_time < user_data.video_restart_delay:
+            time.sleep(user_data.video_restart_delay)
         user_data.reset_state()
 
     frame = None
@@ -155,6 +162,10 @@ def app_callback(pad, info, user_data):
 
     if user_data.use_frame and frame is not None:
         user_data.set_frame(frame)
+
+    # Update last video end time when reaching the end of video
+    if frame is None:
+        user_data.last_video_end_time = current_time
 
     return Gst.PadProbeReturn.OK
 
