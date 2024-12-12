@@ -37,6 +37,7 @@ class CustomCallbackClass(app_callback_class):
         self.fall_detection_active = False
         self.detection_status = "MONITORING"
         self.fall_score = 0
+        self.fall_frame = None
         
         # Initialize curses screen
         self.screen = curses.initscr()
@@ -58,6 +59,7 @@ class CustomCallbackClass(app_callback_class):
         self.fall_detection_active = False
         self.detection_status = "MONITORING"
         self.fall_score = 0
+        self.fall_frame = None
         self.update_display("[System] Resetting all detection states...")
         
     def update_display(self, message=None):
@@ -66,10 +68,10 @@ class CustomCallbackClass(app_callback_class):
         
         # Draw border
         self.screen.addstr(0, 0, "+" + "-" * 58 + "+")
-        for i in range(1, 10):
+        for i in range(1, 11):
             self.screen.addstr(i, 0, "|")
             self.screen.addstr(i, 59, "|")
-        self.screen.addstr(10, 0, "+" + "-" * 58 + "+")
+        self.screen.addstr(11, 0, "+" + "-" * 58 + "+")
         
         # Title
         self.screen.addstr(1, 25, "Fall Detection System")
@@ -80,6 +82,8 @@ class CustomCallbackClass(app_callback_class):
         # Different colors for different states
         if self.fall_detection_active:
             self.screen.addstr(4, 2, "[ FALL DETECTED ]", curses.color_pair(1) | curses.A_BOLD)
+            if self.fall_frame:
+                self.screen.addstr(4, 30, f"at frame {self.fall_frame}", curses.color_pair(1) | curses.A_BOLD)
         elif self.fall_score > 50:
             self.screen.addstr(4, 2, "[ WARNING ]", curses.color_pair(2) | curses.A_BOLD)
         else:
@@ -87,10 +91,11 @@ class CustomCallbackClass(app_callback_class):
             
         self.screen.addstr(5, 2, f"Fall Score: {self.fall_score:.1f}")
         self.screen.addstr(6, 2, f"Active Tracks: {len(self.tracks)}")
+        self.screen.addstr(7, 2, f"Current Frame: {self.frame_count}")
         
         # Latest message
         if message:
-            self.screen.addstr(8, 2, f"Last Event: {message}")
+            self.screen.addstr(9, 2, f"Last Event: {message}")
         
         self.screen.refresh()
         
@@ -142,7 +147,12 @@ class CustomCallbackClass(app_callback_class):
             is_fall = head_drop > self.head_drop_threshold
             
             self.fall_history.append(is_fall)
+            was_active = self.fall_detection_active
             self.fall_detection_active = sum(self.fall_history) >= 2
+            
+            # Record frame number when fall is first detected
+            if self.fall_detection_active and not was_active:
+                self.fall_frame = self.frame_count
             
             current_score = min(100, abs(head_drop * 500))
             track['fall_scores'].append(current_score)
